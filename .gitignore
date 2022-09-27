@@ -1,2 +1,3 @@
 TA.miniseed
-test.zarr
+*.pyc
+*.zarr
