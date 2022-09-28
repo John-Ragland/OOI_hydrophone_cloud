@@ -9,11 +9,12 @@ from datetime import timedelta
 from OOI_hydrophone_cloud import utils
 from tqdm import tqdm
 import xarray as xr
+import os
 
 time_base = datetime(2015,1,1)
 chunk_length = timedelta(days=1)
 
-for k in tqdm(range(141, 2800)):
+for k in tqdm(range(183, 2800)):
     
     start_time = time_base + (k*chunk_length)
     end_time = time_base + ((k+1)*chunk_length)
@@ -61,7 +62,8 @@ for k in tqdm(range(141, 2800)):
     # create 1 hour chunks
     ds = ds.chunk({'time':3600*200})
 
-    account_key = '<acount_key>'
+    # azure access key must be saved as environment variable on machine
+    account_key = os.environ['AZURE_KEY']
     storage_options={'account_name': 'lfhydrophone', 'account_key': account_key}
 
     if k == 0:
