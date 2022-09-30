@@ -14,7 +14,7 @@ import os
 time_base = datetime(2015,1,1)
 chunk_length = timedelta(days=1)
 
-for k in tqdm(range(183, 2800)):
+for k in tqdm(range(202, 2800)):
     
     start_time = time_base + (k*chunk_length)
     end_time = time_base + ((k+1)*chunk_length)
