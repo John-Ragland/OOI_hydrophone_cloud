@@ -14,22 +14,28 @@ import os
 time_base = datetime(2015,1,1)
 chunk_length = timedelta(days=1)
 
-for k in tqdm(range(202, 2800)):
+for k in tqdm(range(35, 2800), position=0):
     
     start_time = time_base + (k*chunk_length)
     end_time = time_base + ((k+1)*chunk_length)
 
+    print('downloading AB...')
     ab = ooipy.request.hydrophone_request.get_acoustic_data_LF(
         start_time, end_time, node='Axial_Base')
+    print('downloading CC...')
     cc = ooipy.request.hydrophone_request.get_acoustic_data_LF(
         start_time, end_time, node='Central_Caldera')
+    print('downloading EC...')
     ec = ooipy.request.hydrophone_request.get_acoustic_data_LF(
         start_time, end_time, node='Eastern_Caldera')
+    print('downloading SB...')
     sb = ooipy.request.hydrophone_request.get_acoustic_data_LF(
         start_time, end_time, node='Slope_Base')
+    print('downloading SH...')
     sh = ooipy.request.hydrophone_request.get_acoustic_data_LF(
         start_time, end_time, node='Southern_Hydrate')
 
+    print('interpolating values...')
     ab_interp, _ = utils.interpolate_time_coord(ab, start_time, end_time)
     cc_interp, _ = utils.interpolate_time_coord(cc, start_time, end_time)
     ec_interp, _ = utils.interpolate_time_coord(ec, start_time, end_time)
@@ -45,6 +51,7 @@ for k in tqdm(range(202, 2800)):
         'channel': 'HDH'
     }
 
+    print('saving to cloud...')
     da_ab = xr.DataArray(ab_interp, dims=['time'], attrs=attrs)
     da_cc = xr.DataArray(cc_interp, dims=['time'], attrs=attrs)
     da_ec = xr.DataArray(ec_interp, dims=['time'], attrs=attrs)
