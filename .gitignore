@@ -1,3 +1,5 @@
 TA.miniseed
 *.pyc
 *.zarr
+*.miniseed
+.ipynb_checkpoints/
