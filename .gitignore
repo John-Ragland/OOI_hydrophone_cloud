@@ -3,3 +3,4 @@ TA.miniseed
 *.zarr
 *.miniseed
 .ipynb_checkpoints/
+scripts/tmp

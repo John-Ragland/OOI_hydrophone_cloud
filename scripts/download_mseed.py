@@ -16,14 +16,15 @@ connect_str = os.environ['AZURE_CONSTR']
 blob_service_client = BlobServiceClient.from_connection_string(connect_str)
 # Create a unique name for the container
 container_name = 'miniseed2'
+
 # Create the container
 #container_client = blob_service_client.create_container(container_name)
 container_client = blob_service_client.get_container_client(container_name)
-time_base = datetime(2015,1,1)
-chunk_length = timedelta(days=1)
+time_base = datetime(2016,1,29)
+chunk_length = timedelta(days=30)
 
 
-for k in tqdm(range(2800), position=0):
+for k in tqdm(range(27, 81), position=0):
     
     starttime = time_base + (k*chunk_length)
     endtime = time_base + ((k+1)*chunk_length)
@@ -41,7 +42,7 @@ for k in tqdm(range(2800), position=0):
     # download day of data
     fn = f"{starttime.strftime('%Y_%m_%d')}.miniseed"
     os.system(f'wget --post-file=tmp/waveform.request -O tmp/{fn} http://service.iris.edu/fdsnws/dataselect/1/query')
-    
+
     # Create a blob client using the local file name as the name for the blob
     blob_client = blob_service_client.get_blob_client(container=container_name, blob=fn)
 
