@@ -4,3 +4,4 @@ TA.miniseed
 *.miniseed
 .ipynb_checkpoints/
 scripts/tmp
+waveform.request
