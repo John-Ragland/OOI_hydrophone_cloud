@@ -167,3 +167,43 @@ def mseed2xarray(mseed_fn, starttime, endtime):
     ds = ds.chunk({'time':3600*200})
 
     return ds
+
+def int_idx(start_date, end_date):
+    '''
+    int_idx - get integer indices for zarr store given date bounds
+
+    Parameters
+    ----------
+    start_date : pd.Timestamp
+        start date for integer slice
+    end_date : pd.Timestamp
+        end date for integer slice
+
+    Returns
+    -------
+    idx_slice : slice
+        slice between start_idx and end_idx
+    '''
+
+    # this is the first time stamp of the zarr store
+    time_base = pd.Timestamp('2015-01-01')
+
+    start_idx = int((start_date - time_base).value/1e9*200)
+    end_idx = int((end_date - time_base).value/1e9*200)
+
+    return slice(start_idx,end_idx)
+
+
+def slice_ds(ds, start_time, end_time):
+    '''
+    slice_ds - slices dataset using time slice and assigns coordinates to time dimension
+    - xarray loads coordinates into memory so this method will fail if slice results
+        in larger coordinate than is available in memory
+    - best use would be for slice to be no larger than one month
+    '''
+
+    ds_sliced = ds.isel({'time':int_idx(start_time, end_time)})
+    time_coord = pd.to_datetime(np.arange(start_time.value, end_time.value, int(5e6)))
+    ds_sliced = ds_sliced.assign_coords({'time':time_coord})
+
+    return ds_sliced
