@@ -193,6 +193,10 @@ def int_idx(start_date, end_date):
 
     return slice(start_idx,end_idx)
 
+def date2int(date):
+    time_base = pd.Timestamp('2015-01-01')
+    idx = int((date - time_base).value/1e9*200)
+    return idx
 
 def slice_ds(ds, start_time, end_time):
     '''
