@@ -10,6 +10,7 @@ from scipy.interpolate import interp1d
 import io
 import obspy
 import xarray as xr
+import warnings
 
 def interpolate_time_coord(hdata, starttime, endtime):
     '''
@@ -198,16 +199,29 @@ def date2int(date):
     idx = int((date - time_base).value/1e9*200)
     return idx
 
-def slice_ds(ds, start_time, end_time):
+def slice_ds(ds, start_time, end_time, include_coord=True):
     '''
     slice_ds - slices dataset using time slice and assigns coordinates to time dimension
-    - xarray loads coordinates into memory so this method will fail if slice results
-        in larger coordinate than is available in memory
-    - best use would be for slice to be no larger than one month
+
+    Parameters
+    ----------
+    ds : xarray.dataset
+        dataset to slice
+    start_time : pd.Timestamp
+        start time for slice
+    end_time : pd.Timestamp
+        end time for slice
+    include_coord : bool
+        whether or not to include time coordinate or not (Default is True)
+        - when True, best use would be for slice to be no larger than one month
     '''
 
+
     ds_sliced = ds.isel({'time':int_idx(start_time, end_time)})
-    time_coord = pd.to_datetime(np.arange(start_time.value, end_time.value, int(5e6)))
-    ds_sliced = ds_sliced.assign_coords({'time':time_coord})
+    if include_coord:
+        if (end_time - start_time) > pd.Timedelta(31, 'd'):
+            warnings.warn('slice is longer than 1 month, include_coord=True might cause memory issues')
+        time_coord = pd.to_datetime(np.arange(start_time.value, end_time.value, int(5e6)))
+        ds_sliced = ds_sliced.assign_coords({'time':time_coord})
 
     return ds_sliced

@@ -36,6 +36,11 @@ def preprocess(da, W=30, Fs=200, tide=False, tide_interp=None):
     tide_interp : scipy.interpolate._interpolate.interp1d
         interpolates ns timestamp to change of tide in meters
         Currently there are not catches for the fact that default is None
+
+    Return
+    ------
+    data_whiten : np.array
+        pre-procesesd data
     '''
     # load single chunk into numpy array
     data = da.values
@@ -43,11 +48,12 @@ def preprocess(da, W=30, Fs=200, tide=False, tide_interp=None):
     # remove mean
     data_nm = data - np.nanmean(data)
 
-    # set_nan = 0
-    data_nm[np.isnan(data_nm)] = 0
-
     # reshape data to be segments of length W
     data_rs = np.reshape(data_nm, (int(len(data_nm)/(W*Fs)), int(W*Fs)))
+
+    # set_nan = 0
+    #nan_mask = np.isnan(data_rs)
+    #data_rs[nan_mask] = 0
 
     if tide:
         D = 1523
@@ -204,7 +210,7 @@ def compute_spectrogram(x, calibration, npts=512, noverlap=256, window='hann', a
     else:
         return spectrogram
 
-def NCCF_chunk(ds, W=30, Fs=200):
+def NCCF_chunk(ds, stack=True):
     '''
     calculate NCCF for given dataset of time-series
 
@@ -218,17 +224,16 @@ def NCCF_chunk(ds, W=30, Fs=200):
         NCCF is calculated from. each DA should have dimension time
         
         ds must only have two data dimensions
-
-    W : float
-        size of single cross correlation window (in seconds)
-    Fs : float
-        sampling rate (Hz). Default 200
     delay_coord : np.array
         coordinates for delay dimension
+    stack : bool
+        whether or not to return all small time correlations or stack then (default True)
+
     Returns
     -------
     NCCF : xr.DataArray
         data array with dimensions ['delay']
+        - if stack is False, data will have dimensions ['delay', 'time']
     '''
     if len(ds) != 2:
         raise Exception('dataset must only have 2 data variabless')
@@ -237,16 +242,21 @@ def NCCF_chunk(ds, W=30, Fs=200):
     node1_pp = preprocess(ds[node1])
     node2_pp = preprocess(ds[node2])
 
+    print(stack)
+    
     R_all = signal.fftconvolve(node1_pp, np.flip(node2_pp,axis=1), axes=1, mode='full')
-    R = np.mean(R_all, axis=0)
+    if stack:
+        R = np.mean(R_all, axis=0)
+        #tau = np.arange(-W+(1/Fs), W, 1/Fs)
 
-    tau = np.arange(-W+(1/Fs), W, 1/Fs)
+        Rx = xr.DataArray(np.expand_dims(R, 0), dims=['time','delay'])
+        return Rx
+    
+    else:
+        Rallx = xr.DataArray(R_all, dims=['time', 'delay'])
+        return Rallx
 
-    Rx = xr.DataArray(np.expand_dims(R, 0), dims=['time','delay'])
-
-    return Rx
-
-def compute_NCCF_stack(ds, W=30, Fs=200, compute=True):
+def compute_NCCF_stack(ds, W=30, Fs=200, compute=True, stack=True):
     '''
     compute_NCCF_stack - takes dataset containing timeseries from two locations
         and calculates an NCCF for every chunk in the time dimensions.
@@ -261,17 +271,29 @@ def compute_NCCF_stack(ds, W=30, Fs=200, compute=True):
         passed to NCCF_chunk
     compute : bool
         whether to return dask task map or computed NCCF stack
+    stack : bool
+        if true, then NCCF is stacked across chunks.
+        if false, full NCCF stack is return (no averaging is done)
     '''
     if len(ds) != 2:
         raise Exception('dataset must only have 2 data variables')
     node1, node2 = list(ds.keys())
 
+    chunk_size = ds.chunks['time'][0]
+    # chunk sizes have to be the same for both data variables (i think this is required in xarray too)
+
     # create template dataarray
-    da_temp = xr.DataArray(np.ones((int(ds[node1].shape[0]/(3600*Fs)), 2*W*Fs-1)), dims=['time','delay'])
-    da_temp = da_temp.chunk({'delay':11999, 'time':1})  
+    # if stack is true, then linear stacking is computing for chunksize of ds
+    if stack == True:
+        da_temp = xr.DataArray(np.ones((int(ds[node1].shape[0]/chunk_size), 2*W*Fs-1)), dims=['time','delay'])
+        da_temp = da_temp.chunk({'delay':11999, 'time':1})  
+    else:
+        da_temp = xr.DataArray(np.ones((int(ds[node1].shape[0]/(W*Fs)), 2*W*Fs-1)), dims=['time','delay'])
+        da_temp = da_temp.chunk({'delay':11999, 'time':int(chunk_size/Fs/W)})  #1 hour chunks in long time
 
-    NCCF_stack = ds.map_blocks(processing.NCCF_chunk, template=da_temp)
-
+    #return processing.NCCF_chunk(ds, stack=False)
+    NCCF_stack = ds.map_blocks(processing.NCCF_chunk, template=da_temp, args=[stack])
+    NCCF_stack = NCCF_stack.assign_coords({'delay': np.arange(-W+1/Fs, W, 1/Fs)})
     if compute:
         return NCCF_stack.compute()
     else:
