@@ -1,3 +1,13 @@
+'''
+mseed2zarr.py - this converts the mseed files saved in lfhydrophone/mseed2 to a zarr store
+
+mseed files are not uniformly created, because I was simultaneously developing the code while downloading the files
+This results in alot of strange handling of the timestamps around 2016
+
+03.06.2023 - updating LF hydrophone zarr store to contain data through 2022. I'm thinking that I'm
+    going to create the zarr store from scratch again and that I will still not have the ability 
+    to append. I'm creating it from scratch so that I can add calibration information
+'''
 import obspy
 import os
 from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
@@ -20,10 +30,10 @@ container_client = blob_service_client.get_container_client(container_name)
 storage_options = {'account_name':'lfhydrophone', 'account_key':os.environ['AZURE_KEY']}
 
 station_names = ['AXBA1','AXCC1','AXEC2','HYSB1', 'HYS14']
-calib_vals = [2257.53, 2480.98, 2421.9, 2311.11, 2499.09]
+calib_vals = [2257.53, 2480.98, 2421.9, 2311.11, 2499.09] # counts/PA
 calib = dict(zip(station_names, calib_vals))
 
-zarr_dir = '/datadrive/lf_hydrophone_data_test.zarr'
+zarr_dir = '/datadrive/ooi_lfhydrophones.zarr'
 
 # List the blobs in the container
 blob_list = list(container_client.list_blobs())
@@ -168,19 +178,25 @@ for k, blob in tqdm(enumerate(blob_list)):
     for key in list(data.keys()):
         data[key] = xr.DataArray(data[key], dims=['time'])
     
+    # Calibrate data
+    for key in list(data.keys()):
+        data[key] = data[key] / calib_vals[key]
+        
     attrs = {
         'network':'OO',
         'channel':'HDH',
         'sampling_rate':200,
         'delta':0.005,
+        'units':'Pa'
     }
+
     # create dataset
     ds = xr.Dataset(data, attrs=attrs)
     ds = ds.chunk({'time':3600*200})
 
     # Save dataset to cloud
     if k == 0:
-        ds.to_zarr(zarr_dir, mode='w')
+        ds.to_zarr(zarr_dir, mode='w-')
     else:
         ds.to_zarr(zarr_dir, append_dim='time')
 

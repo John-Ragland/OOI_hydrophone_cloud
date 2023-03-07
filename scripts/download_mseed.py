@@ -1,5 +1,7 @@
 '''
-download_data.py - create zarr data store from OOI LF hydrophone data
+download_mseed.py - download mseed to disk and then upload to blob storage
+TODO add automated refresh ability that can update the zarr store with new data
+
 John Ragland; September 30, 2022
 '''
 
@@ -11,7 +13,7 @@ from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
 
 # set up all the azure stuff
 
-connect_str = os.environ['AZURE_CONSTR']
+connect_str = os.environ['AZURE_CONSTR_lfhydrophone']
 # Create the BlobServiceClient object which will be used to create a container client
 blob_service_client = BlobServiceClient.from_connection_string(connect_str)
 # Create a unique name for the container
@@ -20,14 +22,23 @@ container_name = 'miniseed2'
 # Create the container
 #container_client = blob_service_client.create_container(container_name)
 container_client = blob_service_client.get_container_client(container_name)
-time_base = datetime(2016,1,29)
-chunk_length = timedelta(days=30)
 
+# Set start date and individual file size.
+time_base = datetime(2022,9,24)
+chunk_length = timedelta(days=30) # size of one mseed file to be downloaded
+n_chunks = 4
 
-for k in tqdm(range(27, 81), position=0):
+# if true, start and end times of each file will be printed
+dry_run = False
+
+for k in tqdm(range(0, n_chunks), position=0):
     
     starttime = time_base + (k*chunk_length)
     endtime = time_base + ((k+1)*chunk_length)
+
+    if dry_run:
+        print(starttime, endtime)
+        continue
 
     # re-write waveform request
     lines = []
