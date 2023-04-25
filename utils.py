@@ -169,7 +169,7 @@ def mseed2xarray(mseed_fn, starttime, endtime):
 
     return ds
 
-def int_idx(start_date, end_date):
+def int_idx(start_date, end_date, time_base=pd.Timestamp('2015-01-01')):
     '''
     int_idx - get integer indices for zarr store given date bounds
 
@@ -186,9 +186,6 @@ def int_idx(start_date, end_date):
         slice between start_idx and end_idx
     '''
 
-    # this is the first time stamp of the zarr store
-    time_base = pd.Timestamp('2015-01-01')
-
     start_idx = int((start_date - time_base).value/1e9*200)
     end_idx = int((end_date - time_base).value/1e9*200)
 
@@ -199,7 +196,7 @@ def date2int(date):
     idx = int((date - time_base).value/1e9*200)
     return idx
 
-def slice_ds(ds, start_time, end_time, include_coord=True):
+def slice_ds(ds, start_time, end_time, include_coord=True, time_base=pd.Timestamp('2015-01-01')):
     '''
     slice_ds - slices dataset using time slice and assigns coordinates to time dimension
 
@@ -214,10 +211,12 @@ def slice_ds(ds, start_time, end_time, include_coord=True):
     include_coord : bool
         whether or not to include time coordinate or not (Default is True)
         - when True, best use would be for slice to be no larger than one month
+    time_base : pd.Timestamp
+        start time of the dataset
     '''
 
 
-    ds_sliced = ds.isel({'time':int_idx(start_time, end_time)})
+    ds_sliced = ds.isel({'time':int_idx(start_time, end_time, time_base=time_base)})
     if include_coord:
         if (end_time - start_time) > pd.Timedelta(31, 'd'):
             warnings.warn('slice is longer than 1 month, include_coord=True might cause memory issues')
@@ -225,3 +224,10 @@ def slice_ds(ds, start_time, end_time, include_coord=True):
         ds_sliced = ds_sliced.assign_coords({'time':time_coord})
 
     return ds_sliced
+
+def open_lfhydrophone_ds():
+    '''
+    returns xarray data for low frequency hydrophones
+    '''
+
+    return

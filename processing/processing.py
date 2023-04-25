@@ -9,11 +9,72 @@ from scipy import signal
 import scipy
 import xarray as xr
 import numpy as np
-from numpy import matlib
-from OOI_hydrophone_cloud import utils
 from OOI_hydrophone_cloud.processing import processing
+import dask
 
-def preprocess(da, W=30, Fs=200, tide=False, tide_interp=None):
+def preprocess_chunk(da, dim, b,a,W=30, Fs=200):
+    '''
+    preprocess_chunk - compute basic pre-processing for NCCF for 
+        a DataArray of arbitrary dimension
+        
+    Pre-processing is fixed to be
+    - divide into 30 s segments
+    - filter between 1 and 90 Hz
+    - clip to 3 times std for every chunk (which is also 1 hour)
+    - frequency whiten
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        DataArray of arbitrary dimensions
+    dim : str
+        dimension to apply pre-processing to (should be samples in time)
+    b : np.array
+        numerator coefficients for filter
+    a : np.array
+        denominator coefficients for filter
+    W : float
+        length of window in seconds
+    Fs : float
+        sampling rate in Hz
+    '''
+
+    # transpose data to put dim last
+    dims = list(da.dims)
+    new_dims_order = dims.copy()
+    new_dims_order.remove(dim)
+    new_dims_order = new_dims_order + [dim]
+    da_t = da.transpose(*new_dims_order)
+
+    # load single chunk into numpy array
+    da_np = da_t.values
+    shape = da_np.shape
+
+    da_rs = np.reshape(da_np, (shape[:-1] + (int(shape[-1]/(W*200)), W*200)))
+    
+    # remove mean
+    da_nm = da_rs - np.nanmean(da_rs, axis=-1, keepdims=True)
+    
+    # filtere data
+    da_filt = signal.filtfilt(b,a,da_nm, axis=-1)
+
+    # clip data
+    std = np.nanstd(da_filt, axis=-1)
+    da_clip = np.clip(da_filt, -3*std[...,None], 3*std[...,None])
+
+    # frequency whiten data
+    da_whiten = freq_whiten(da_clip, b,a)
+    
+    # create new DataArray
+    da_unstack = np.reshape(da_whiten, shape)
+
+    da_preprocess = xr.DataArray(da_unstack, dims=new_dims_order)
+    da_preprocess = da_preprocess.transpose(*dims)
+    da_preprocess = da_preprocess.assign_coords(da.coords)
+
+    return da_preprocess.transpose(*dims)
+
+def preprocess(da, dim, W=30, Fs=200):
     '''
     preprocess - takes time series and performs pre-processing steps for estimating cross-correlation
 
@@ -26,72 +87,22 @@ def preprocess(da, W=30, Fs=200, tide=False, tide_interp=None):
     Parameters
     ----------
     da : xr.DataArray
-        should be 1D dataarray with dimension 'time'.
+        DataArray of arbitrary dimensions
+    dim : str
+        dimension to apply pre-processing to (should be samples in time)
     W : float
         length of window in seconds
     Fs : float
         sampling rate in Hz 
-    tide : bool
-        if true, linear/geometric time warping is applied for s1b0 peak
-    tide_interp : scipy.interpolate._interpolate.interp1d
-        interpolates ns timestamp to change of tide in meters
-        Currently there are not catches for the fact that default is None
 
     Return
     ------
     data_whiten : np.array
         pre-procesesd data
     '''
-    # load single chunk into numpy array
-    data = da.values
-
-    # remove mean
-    data_nm = data - np.nanmean(data)
-
-    # reshape data to be segments of length W
-    data_rs = np.reshape(data_nm, (int(len(data_nm)/(W*Fs)), int(W*Fs)))
-
-    # set_nan = 0
-    #nan_mask = np.isnan(data_rs)
-    #data_rs[nan_mask] = 0
-
-    if tide:
-        D = 1523
-        L = 3186
-        c = 1481
-
-        sample_time_coords = da.time[::W*Fs].values.astype(int)
-        tidal_shift = tide_interp(sample_time_coords)
-        time_shift = 2*np.sqrt(D**2 + (L/2)**2)/c - 2*np.sqrt((D-tidal_shift)**2 + (L/2)**2)/c
-        timebin_shift = np.expand_dims(time_shift/0.005, 1)
-        k = np.expand_dims(np.arange(0,W*Fs + 1), 0)
-        phase_shift = np.exp(-1j*2*np.pi/(W*Fs)*k*timebin_shift)
-        data_shift_f = scipy.fft.fft(
-            np.hstack((data_rs, np.zeros((data_rs.shape[0], 1)))), axis=1) * phase_shift
-        # force shifted signal to be real
-        data_shift_f[:,int(data_shift_f.shape[1]/2+1):] = np.flip(np.conjugate(data_shift_f[:,1:int(data_shift_f.shape[1]/2 + 1)]),axis=1)
-
-        data_shift = np.real(scipy.fft.ifft(data_shift_f))[:,:-1]
-    
-    else:
-        data_shift = data_rs
-
-
-    # filter data
-        # filter is 4th order butterwork [0.01, 0.9]
-    b = [0.63496904 , 0, - 2.53987615,  0, 3.80981423, 0, - 2.53987615, 0, 0.63496904]
-    a = [ 1, -0.73835614, -2.84105805, 1.53624064, 3.3497155, -1.14722815, -1.86018017, 0.29769033, 0.40318603]
-    
-    data_filt = signal.filtfilt(b,a,data_shift, axis=1)
-
-    # clip data
-    std = np.nanstd(data_filt)
-    data_clip = np.clip(data_filt, -3*std, 3*std)
-
-    # frequency whiten data
-    data_whiten = freq_whiten(data_clip, b,a)
-
-    return data_whiten
+    b,a = signal.butter(4, [0.01, 0.9], btype='bandpass')
+    data_pp = da.map_blocks(preprocess_chunk, kwargs=({'dim':dim, 'b':b, 'a':a, 'W':W, 'Fs':Fs}), template=da)
+    return data_pp
 
 def freq_whiten(data, b,a):
     '''
@@ -101,30 +112,30 @@ def freq_whiten(data, b,a):
     Parameters
     ----------
     data : np.array
-        array of shape [segment, time] containing segments of time
-        series data to individually whiten
+        array of shape [... , segment, time] containing segments of time
+        series data to individually whiten. can contain other dimensions prior
+        to segment and time, but segment and time must be last two dimensions
     
     '''
-    # window data
-    win = np.expand_dims(scipy.signal.windows.hann(data.shape[1]), 1)
+    # window data and compute unit pulse
+    win = signal.windows.hann(data.shape[-1])
+    pulse = signal.unit_impulse(data.shape[-1], idx='mid')
+    for k in range(len(data.shape)-1):
+        win = np.expand_dims(win, 0)
+        pulse = np.expand_dims(pulse, 0)
 
-    data_win = (data.T * win).T
+    data_win = data * win
 
     # take fft
-    data_f = scipy.fft.fft(data_win, axis=1)
+    data_f = scipy.fft.fft(data_win, axis=-1)
     data_phase = np.angle(data_f)
 
-    # get magnitude of filter
-    #_,H = signal.freqz(b,a, data.shape[1])
-
-    pulse = signal.unit_impulse(data.shape[1], idx='mid')
-    H = np.abs(scipy.fft.fft(signal.filtfilt(b,a,pulse)))
-    H = np.expand_dims(H, 1)
+    H = np.abs(scipy.fft.fft(signal.filtfilt(b,a,pulse, axis=-1)))
 
     # construct whitened signal
-    data_whiten_f = (np.exp(data_phase * 1j).T * np.abs(H)**2).T # H is squared because of filtfilt
+    data_whiten_f = (np.exp(data_phase * 1j) * np.abs(H)**2) # H is squared because of filtfilt
 
-    data_whiten = np.real(scipy.fft.ifft(data_whiten_f, axis=1))
+    data_whiten = np.real(scipy.fft.ifft(data_whiten_f, axis=-1))
 
     return data_whiten
 
@@ -285,11 +296,18 @@ def compute_NCCF_stack(ds, W=30, Fs=200, compute=True, stack=True):
     # create template dataarray
     # if stack is true, then linear stacking is computing for chunksize of ds
     if stack == True:
-        da_temp = xr.DataArray(np.ones((int(ds[node1].shape[0]/chunk_size), 2*W*Fs-1)), dims=['time','delay'])
-        da_temp = da_temp.chunk({'delay':11999, 'time':1})  
+        dask_temp = dask.array.random.random(
+            (int(ds[node1].shape[0]/chunk_size), 2*W*Fs-1))
+        da_temp = xr.DataArray(dask_temp, dims=['time','delay'])
+        da_temp = da_temp.chunk({'delay':int(2*W*Fs-1), 'time':1})  # single value chunks in long time
+        #da_temp = xr.DataArray(np.ones((int(ds[node1].shape[0]/chunk_size), 2*W*Fs-1)), dims=['time','delay'])
+
+    
     else:
-        da_temp = xr.DataArray(np.ones((int(ds[node1].shape[0]/(W*Fs)), 2*W*Fs-1)), dims=['time','delay'])
-        da_temp = da_temp.chunk({'delay':11999, 'time':int(chunk_size/Fs/W)})  #1 hour chunks in long time
+        dask_temp = dask.array.random.random((int(ds[node1].shape[0]/(W*Fs)), 2*W*Fs-1))
+        da_temp = xr.DataArray(dask_temp, dims=['time', 'delay'])
+        da_temp = da_temp.chunk({'delay':int(2*W*Fs-1), 'time':int(chunk_size/Fs/W)})  #1 hour chunks in long time
+        #da_temp = xr.DataArray(np.ones((int(ds[node1].shape[0]/(W*Fs)), 2*W*Fs-1)), dims=['time','delay'])
 
     #return processing.NCCF_chunk(ds, stack=False)
     NCCF_stack = ds.map_blocks(processing.NCCF_chunk, template=da_temp, args=[stack])
@@ -298,3 +316,172 @@ def compute_NCCF_stack(ds, W=30, Fs=200, compute=True, stack=True):
         return NCCF_stack.compute()
     else:
         return NCCF_stack
+
+def compute_MultiElement_NCCF_chunk(da, time_dim='time', W=30, Fs=200):
+    '''
+    compute_MultiElement_NCCF - takes dataset containing timeseries from two locations
+        and calculates an NCCF for each element with the first element
+    
+    Not completely sure if this will cause downstream problems, but this function is seperated 
+        from preprocessing
+    
+    Parameters
+    ----------
+    da : xr.DataArray
+        dataarray with dimensions ['time', 'element']. second dimension does not have to be named element
+    time_dim : str
+        name of delay dimension
+    W : float
+        size of window in seconds
+    Fs : float
+        sampling rate in Hz
+    '''
+
+    # move delay dimension to last dimension
+    dims = list(da.dims)
+    new_dims_order = dims.copy()
+    new_dims_order.remove(time_dim)
+    new_dims_order = new_dims_order + [time_dim]
+    da_t = da.transpose(*new_dims_order)
+
+    # load single chunk into numpy array
+    da_np = da_t.values
+    shape = da_np.shape
+
+    # reshape into seperate segments of length W
+    da_rs = np.reshape(da_np, (shape[:-1] + (int(shape[-1]/(W*Fs)), W*Fs)))
+    
+    # loop through all elements and compute NCCF
+    for k in range(da_rs.shape[0]):
+        R_all_single = np.expand_dims(signal.fftconvolve(da_rs[0,:,:], np.flip(da_rs[k,:,:],axis=-1), axes=-1, mode='full'), axis=0)
+        if k == 0:
+            R_all = R_all_single
+        
+        else:
+            R_all = np.concatenate((R_all, R_all_single), axis=0)
+    
+    NCCF_chunk_unstacked = xr.DataArray(R_all, dims=[new_dims_order[0], 'samples', 'delay'])
+    NCCF_chunk = NCCF_chunk_unstacked.mean(dim='samples')
+    NCCF_chunk = NCCF_chunk.expand_dims(f'{time_dim}_chunk').transpose(new_dims_order[0], 'time_chunk', 'delay')
+
+    print(NCCF_chunk.shape)
+    return NCCF_chunk
+
+def compute_MultiElement_NCCF(da, time_dim='time', W=30, Fs=200):
+    '''
+    compute_MultiElement_NCCF - takes dataarray containing timeseries with multiple elements
+        and calculates an NCCF between each element and first element
+
+    can only handle a single chunk in the element / distance dimension
+    Parameters
+    ----------
+    da : xr.DataArray
+        dataarray with dimensions ['time', 'element']. second dimension does not have to be named element
+    time_dim : str
+        name of time dimension
+    W : float
+        size of window in seconds
+    Fs : float
+        sampling rate in Hz
+    '''
+
+    time_idx = da.dims.index(time_dim)
+
+    # move delay dimension to last dimension
+    dims = list(da.dims)
+    new_dims_order = dims.copy()
+    new_dims_order.remove(time_dim)
+    new_dims_order = new_dims_order + [time_dim]
+    da_t = da.transpose(*new_dims_order)
+
+    n_chunks = len(da.chunks[time_idx])
+
+    dask_temp = dask.array.random.random((da_t.shape[0], n_chunks, 2*W*Fs-1))
+    da_temp = xr.DataArray(dask_temp, dims=[new_dims_order[0], f'{time_dim}_chunk', 'delay'], name='multi-element NCCF')
+    da_temp = da_temp.chunk({f'{time_dim}_chunk':1})  # single value chunks in long time
+
+    NCCF_me = da.map_blocks(compute_MultiElement_NCCF_chunk, template=da_temp, kwargs={'time_dim':time_dim, 'W':W, 'Fs':Fs})
+    return NCCF_me
+
+def preprocess_archive(da, W=30, Fs=200, tide=False, tide_interp=None):
+    '''
+    preprocess - takes time series and performs pre-processing steps for estimating cross-correlation
+
+    Currently pre-processing is fixed to be
+    - divide into 30 s segments
+    - filter between 1 and 90 Hz
+    - clip to 3 times std for every chunk (which is also 1 hour)
+    - frequency whiten
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        should be 1D dataarray with dimension 'time'.
+    W : float
+        length of window in seconds
+    Fs : float
+        sampling rate in Hz 
+    tide : bool
+        if true, linear/geometric time warping is applied for s1b0 peak
+    tide_interp : scipy.interpolate._interpolate.interp1d
+        interpolates ns timestamp to change of tide in meters
+        Currently there are not catches for the fact that default is None
+
+    Return
+    ------
+    data_whiten : np.array
+        pre-procesesd data
+    '''
+    # load single chunk into numpy array
+    data = da.values
+
+    # remove mean
+    data_nm = data - np.nanmean(data)
+
+    # reshape data to be segments of length W
+    data_rs = np.reshape(data_nm, (int(len(data_nm)/(W*Fs)), int(W*Fs)))
+
+    # set_nan = 0
+    #nan_mask = np.isnan(data_rs)
+    #data_rs[nan_mask] = 0
+
+    if tide:
+        D = 1523
+        L = 3186
+        c = 1481
+
+        sample_time_coords = da.time[::W*Fs].values.astype(int)
+        tidal_shift = tide_interp(sample_time_coords)
+        time_shift = 2*np.sqrt(D**2 + (L/2)**2)/c - 2 * \
+            np.sqrt((D-tidal_shift)**2 + (L/2)**2)/c
+        timebin_shift = np.expand_dims(time_shift/0.005, 1)
+        k = np.expand_dims(np.arange(0, W*Fs + 1), 0)
+        phase_shift = np.exp(-1j*2*np.pi/(W*Fs)*k*timebin_shift)
+        data_shift_f = scipy.fft.fft(
+            np.hstack((data_rs, np.zeros((data_rs.shape[0], 1)))), axis=1) * phase_shift
+        # force shifted signal to be real
+        data_shift_f[:, int(data_shift_f.shape[1]/2+1):] = np.flip(
+            np.conjugate(data_shift_f[:, 1:int(data_shift_f.shape[1]/2 + 1)]), axis=1)
+
+        data_shift = np.real(scipy.fft.ifft(data_shift_f))[:, :-1]
+
+    else:
+        data_shift = data_rs
+
+    # filter data
+        # filter is 4th order butterwork [0.01, 0.9]
+    b = [0.63496904, 0, - 2.53987615,  0,
+         3.80981423, 0, - 2.53987615, 0, 0.63496904]
+    a = [1, -0.73835614, -2.84105805, 1.53624064, 3.3497155, -
+         1.14722815, -1.86018017, 0.29769033, 0.40318603]
+
+    data_filt = signal.filtfilt(b, a, data_shift, axis=1)
+
+    # clip data
+    std = np.nanstd(data_filt)
+    data_clip = np.clip(data_filt, -3*std, 3*std)
+
+    # frequency whiten data
+    data_whiten = freq_whiten(data_clip, b, a)
+
+    return data_whiten

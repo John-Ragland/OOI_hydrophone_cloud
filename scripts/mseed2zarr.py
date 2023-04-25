@@ -20,40 +20,43 @@ from tqdm import tqdm
 import xarray as xr
 from dask.distributed import Client
 
-connect_str = os.environ['AZURE_CONSTR']
+connect_str = os.environ['AZURE_CONSTR_ooidata']
 # Create the BlobServiceClient object which will be used to create a container client
 blob_service_client = BlobServiceClient.from_connection_string(connect_str)
 # Create a unique name for the container
-container_name = 'miniseed2'
+container_name = 'lfhydrophonemseed'
+
 # Create container
 container_client = blob_service_client.get_container_client(container_name)
-storage_options = {'account_name':'lfhydrophone', 'account_key':os.environ['AZURE_KEY']}
 
 station_names = ['AXBA1','AXCC1','AXEC2','HYSB1', 'HYS14']
 calib_vals = [2257.53, 2480.98, 2421.9, 2311.11, 2499.09] # counts/PA
 calib = dict(zip(station_names, calib_vals))
 
-zarr_dir = '/datadrive/ooi_lfhydrophones.zarr'
+zarr_dir = '/datadrive/lfhydrophone/ooi_lfhydrophones.zarr'
 
 # List the blobs in the container
 blob_list = list(container_client.list_blobs())
 last_int_idx = -1
 
 start_idx = 0
+dry_run = False
 
 for k, blob in tqdm(enumerate(blob_list)):
     if k < start_idx:
         continue
+
+    elif k == 0:
+        # create log file heading
+        with open('log.txt', 'w') as f:
+            f.write('int_idx, date_string\n')
+        last_int_idx = 0
+
     elif k == start_idx:
         # get last int idx of ds
         ds1 = xr.open_zarr(zarr_dir)
         last_int_idx = ds1['AXBA1'].time[-1]
 
-    if k == 0:
-        # create log file heading
-        with open('log.txt', 'w') as f:
-            f.write('int_idx, date_string\n')
-    
     # reset file empty flag
     file_empty = False
 
@@ -67,7 +70,11 @@ for k, blob in tqdm(enumerate(blob_list)):
     starttime = obspy.UTCDateTime(starttime)
     endtime = obspy.UTCDateTime(endtime)
 
-    fn = '../data/temp.miniseed'
+    if dry_run:
+        print(starttime, endtime)
+        break
+
+    fn = 'temp.miniseed'
     
     # remove file if exists
     if os.path.exists(fn):
@@ -85,7 +92,12 @@ for k, blob in tqdm(enumerate(blob_list)):
     
     # download file using azcopy
     print(f"Downloading blob {blob.name}...")
-    os.system(f"bash download_file.sh {blob['name']}")
+    #os.system(f"bash download_file.sh {blob['name']}")
+
+    single_blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob.name)
+    with open(file='temp.miniseed', mode="wb") as sample_blob:
+        download_stream = single_blob_client.download_blob()
+        sample_blob.write(download_stream.readall())
 
     # calculate number of points that should be there
     npts = int((endtime - starttime)*200 + 1)
@@ -180,7 +192,7 @@ for k, blob in tqdm(enumerate(blob_list)):
     
     # Calibrate data
     for key in list(data.keys()):
-        data[key] = data[key] / calib_vals[key]
+        data[key] = data[key] / calib[key]
         
     attrs = {
         'network':'OO',
