@@ -5,3 +5,4 @@ TA.miniseed
 .ipynb_checkpoints/
 scripts/tmp
 waveform.request
+_version.py
